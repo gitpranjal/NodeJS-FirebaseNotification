@@ -1,65 +1,156 @@
-var admin = require('./firebase-config').admin
+var sql = require('mssql')
+var admin = require('/home/pranjal/node_mysql/mssql_live_notification/firebase-config').admin
 var sql = require('mssql');
 var fs = require('fs')
-//2.
-var config = {
-    server: '***',
-    database: '***',
-    user: '***',
-    password: '****'
-};
-//3.
-function loadMessages() {
-    //4.
-    var dbConn = new sql.ConnectionPool(config);
-    //5.
-    dbConn.connect().then(function () {
-        //6.
-        var request = new sql.Request(dbConn);
-        var query = fs.readFileSync('query.sql').toString()
-	      console.log("Checking for pending messages")
-        request.query(query)
-        .then(function (recordSet) {
-            if(recordSet["recordset"].length != 0)
-            	 { console.log("New messages with pending status found as shown below:")
-            		for(row of recordSet["recordset"])
-              		{
-              		// console.log(row["ANDROID_TOKEN"])
-              		var message = { notification: {
-                                                title: "Hello",
-                                                body: "Hello" } }
 
-              		var notification_options = { priority: "high", timeToLive: 60 * 60 * 24 };
+var clientsDBconfig = {
+  server: '**',
+  database: '**',
+  user: '**',
+  password: '**'
 
-              		var registrationToken = row["ANDROID_TOKEN"].toString()
-              		admin.messaging().sendToDevice(registrationToken, message, notification_options)
-                     .then( response => {console.log("Notification sent successfully")})
-              		   .catch(error => {console.log("Notification couldn'y be sent: "+error)} )
-                   }
-            		}
-    		
-          	else
-          	  {
-            		console.log("No new message")
-                
-              }
-                   dbConn.close();
-                  
-              })
-        .catch(function (err) {
-                  console.log("Error in querying or after querying action block")
-                  console.log(err);
-                  dbConn.close();
-              });
-          }).catch(function (err) {
-              //9.
-              console.log("ERROR CONNECTING TO DATABASE :");
-              console.log(err)
-          });
-      }
-//10.
+}
 
-setInterval(loadMessages, 3000)
+var notification_time_offset_minutes = 15
+var notification_time_offset_hours = 0
+var notification_time_offset_days = 1
+
+var sent_notification_ids = require('/home/pranjal/node_mysql/mssql_live_notification/traversed_notif_ids.js')
+var currentTime = new Date()
+currentTime.setMinutes((currentTime.getMinutes() - notification_time_offset_minutes)%60)
+currentTime.setHours((currentTime.getHours() - notification_time_offset_hours)%24)
+currentTime.setDate(currentTime.getDate() - notification_time_offset_days)
+
+var notification_start_datetime = new Date(currentTime.toString().split('GMT')[0]+' UTC').toISOString()
+
+var query = eval('`'+fs.readFileSync('/home/pranjal/node_mysql/mssql_live_notification/query.sql').toString()+'`')
 
 
+var T = 1000*30
 
+var notify = function()
+{		console.log("############ Notifying")
+
+		//setTimeout(() =>{clientsDBConnection.close() }, T-1000)
+		var clientsDBConnection = new sql.ConnectionPool(clientsDBconfig)
+		clientsDBConnection.connect()
+		.then(function(){
+
+		  
+
+		  var client_info_request = new sql.Request(clientsDBConnection)
+		  var num_databases_connected =0
+		  client_info_request.query('SELECT  client_id, client_name, CLIENT_CODE , dbname, DB_USER_NAME, DB_PWD  from Core_client_mt')
+		  .then(function(clientInfoRecords){
+		      
+
+		      clientInfoRecords["recordset"].forEach(function(config)
+		      {
+
+		        if(!config["dbname"] || !config["DB_USER_NAME"])
+		          return
+		        
+		        var new_message = true
+		        
+		        
+		        // var database_config = {
+		        //                         "server" : clientsDBconfig["server"],
+		        //                         "database" : config["dbname"],
+		        //                         "user" : config["DB_USER_NAME"],
+		        //                         "password" : config["DB_PWD"],
+		        //                       }
+
+		        var database_config = {
+		                                "server" : clientsDBconfig["server"],
+		                                "database" : "**",
+		                                "user" : "**",
+		                                "password" : "**",
+		                              }
+
+
+		        var dbConn = new sql.ConnectionPool(database_config)
+		        //setTimeout(() =>{dbConn.close() }, T-1000)
+		        dbConn.connect()
+		          .then(function(){
+		         
+
+		            var request = new sql.Request(dbConn)
+		 
+		                var row_num = 0
+		                request.query(query)
+		                  .then(function(recordSet){
+		                    
+		                
+		                    recordSet["recordset"].forEach(function(row)
+		                    {
+
+		                      if(sent_notification_ids.includes((row["NOTIF_ID"]+"####"+row["ANDROID_TOKEN"]).toString()))
+                                  { 
+                                    console.log("Message with notification_id: "+row["NOTIF_ID"]+" already sent to token "+ row["ANDROID_TOKEN"])
+                                    return 
+                                  }
+
+                              fs.appendFile("/home/pranjal/node_mysql/mssql_live_notification/traversed_notif_ids.txt", (row["NOTIF_ID"]+"####"+row["ANDROID_TOKEN"]).toString()+" " , (error) => { if (error) throw error})
+
+		                      sent_notification_ids.push((row["NOTIF_ID"]+"####"+row["ANDROID_TOKEN"]).toString())
+
+		                      
+		                      var androidResgistrationToken = row["ANDROID_TOKEN"].toString()
+		                      var iosResgistrationToken = row["IOS_TOKEN"].toString()
+		                      var message = {
+		                                "tokens": [androidResgistrationToken, iosResgistrationToken],
+		                                "notification": {
+		                                          "title":"Notification",
+		                                          "body": row["NOTIF_MSG"]
+		                                                 },
+		                                "data": {
+		                                      "title":"Notification",
+		                                      "body": row["NOTIF_MSG"]
+		                                         }
+
+		                                    }
+		                      admin.messaging().sendMulticast(message)
+		                        .then(response => { 
+
+		                                            console.log("Connecting to database: "+config["dbname"]+ " to send new messages")
+		                                            
+		                                            console.log("Notification sent successfully"+response)
+		                                            console.log("MEssage sent: "+row["NOTIF_MSG"])
+		                                            console.log("Android token: "+row["ANDROID_TOKEN"])
+		                                            console.log("IOS token: "+row["IOS_TOKEN"])
+		                                      
+		                                            
+		                 
+		                                             //console.log(sent_notification_ids)
+		                                          
+		                                            
+		                                          })
+		                        .catch(error => {console.log("Notification couldn't be sent: "+error)
+		                        					dbConn.close()
+		                        					dbConn.connect()
+		                    					})
+		                      
+
+		                      
+		                    })
+		                    
+		                  })
+		                  .catch(function(error){console.log("###Query result in database named: "+config["database"]+" unsuccessful with error: "+error)})
+
+		             
+		          })
+		          .catch(function(error){console.log("####Couldn't connect to database"+config["dbname"]+" with error"+ error)
+
+		      							})
+		         
+		       
+		      })
+
+
+		  })
+		})
+		    
+		.catch(function(error){console.log("Couldn't connect to Apps_Cloud_Staging_test with error: "+error)})
+}
+
+notify()
